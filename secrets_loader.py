@@ -22,6 +22,8 @@ def load_secrets(secrets_file: str) -> dict[str, str]:
                     continue
                 key, value = line.split("=", 1)
                 secrets[key.strip()] = value.strip()
+    else:
+        print(f"Secrets file '{secrets_file}' does not exist.")
 
     return secrets
 

@@ -1,2 +1,3 @@
 SECRETS
 *.pyc
+.DS_Store
