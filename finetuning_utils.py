@@ -15,6 +15,7 @@ def run_fine_tuning(
     log_dir: str = "fine_tuning_logs",
     csv_path: str = "fine_tuning_experiments.csv",
     client: OpenAI = None,
+    suffix: str = "",
 ) -> Tuple[Any, Any]:  # Use Tuple from typing
     """
     Run a fine-tuning job and log all relevant information.
@@ -49,7 +50,7 @@ def run_fine_tuning(
         # Create fine-tuning job
         print(f"Starting fine-tuning job with model {model_id}...")
         job = client.fine_tuning.jobs.create(
-            model=model_id, training_file=training_file.id, hyperparameters=hyperparameters
+            model=model_id, training_file=training_file.id, hyperparameters=hyperparameters, suffix=suffix
         )
 
         # Wait for completion
