@@ -4,7 +4,6 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
-
 from openai import OpenAI
 
 
@@ -44,7 +43,7 @@ class SimpleRunner:
         try:
             # Retrieve top logprobs for the first token generated
             logprobs = completion.choices[0].logprobs.content[0].top_logprobs
-            return {el.token: float(np.exp(el.logprob)) for el in logprobs}
+            return {el.token: float(el.logprob) for el in logprobs}
         except (IndexError, AttributeError):
             print(f"Warning: Failed to get logprobs from {self.model}")
             return {}
@@ -75,7 +74,7 @@ class SimpleRunner:
         self,
         messages: List[Dict],
         outputs: List[str],
-        postprocess: Optional[Callable[[str], str]] = None,
+        postprocess: Optional[Callable[[str], str]] = lambda x: x.strip().upper(),
     ) -> Dict[str, float]:
         """
         Calculate normalized probabilities for specified outputs.
@@ -88,8 +87,10 @@ class SimpleRunner:
         Returns:
             Dict[str, float]: Mapping of each output to its normalized probability.
         """
-        # Retrieve raw token probabilities
-        probs_dict = self.logprob_probs(messages)
+        # Retrieve raw token log-probabilities
+        logprobs_dict = self.logprob_probs(messages)
+        # Convert logprobs to probabilities
+        probs_dict = {k: float(np.exp(v)) for k, v in logprobs_dict.items()}
 
         # Apply postprocessing if provided
         if postprocess:
@@ -119,9 +120,12 @@ class SimpleRunner:
         Returns:
             Dict[str, float]: Sorted dictionary of token probabilities (highest first).
         """
+        logprobs_dict = self.logprob_probs(messages)
+        probs_dict = {k: float(np.exp(v)) for k, v in logprobs_dict.items()}
+
         return dict(
             sorted(
-                self.logprob_probs(messages).items(),
+                probs_dict.items(),
                 key=lambda x: x[1],
                 reverse=True,
             )
@@ -161,3 +165,68 @@ class SimpleRunner:
                         yield kwargs_result, result
                 except Exception as e:
                     print(f"Error in future: {str(e)}")
+
+
+def evaluate_prompts(runner, prompts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Processes prompts and computes metrics for each question, comparing the two versions.
+
+    Each question is expected to produce two versions (one where the target is "A" and one where it is "B"),
+    sharing the same "_id". The "_target_output" corresponds to the expected answer.
+
+    This is to be used together with A/B questions like in the HHH dataset. Here A and B are always the "good" responses.
+
+    Parameters:
+        runner: The model runner (instance of SimpleRunner)
+        prompts: List of prompt dictionaries with keys:
+            "messages": List of message dicts.
+            "_target_output": Expected answer ("A" or "B").
+            "outputs": List of outputs (e.g. ["A", "B"]).
+            "_id": Identifier for the question.
+        model_name: Name of the model being evaluated.
+
+    Returns:
+        List of dictionaries with metrics for each question.
+    """
+    # Process all prompts and group results by the shared question ID (_id)
+    grouped_results = {}
+    for kwargs, result in runner.get_many(runner.get_probs, prompts):
+        qid = kwargs.get("_id")
+        target = kwargs.get("_target_output")
+        if qid not in grouped_results:
+            grouped_results[qid] = {}
+        grouped_results[qid][target] = {"result": result, "metadata": kwargs}
+
+    final_results = []
+    for qid, versions in grouped_results.items():
+        # Expect both versions ("A" and "B") to be present for each question
+        if "A" not in versions or "B" not in versions:
+            continue
+
+        version_A = versions["A"]
+        version_B = versions["B"]
+
+        # Retrieve the probabilities corresponding to the target outputs for each version.
+        p_A = version_A["result"].get("A", 0.0)
+        p_B = version_B["result"].get("B", 0.0)
+
+        # Calculate metrics: average probability and absolute consistency gap
+        avg_p = (p_A + p_B) / 2
+        consistency_gap = abs(p_A - p_B)
+
+        # Use the question text from the first message in version A (both versions share the same base question)
+        question_str = version_A["metadata"]["messages"][0]["content"]
+
+        # Build the final result dictionary
+        final_results.append(
+            {
+                "question_id": qid,
+                "question": question_str,
+                "p_A": p_A,
+                "p_B": p_B,
+                "avg_p": avg_p,
+                "consistency_gap": consistency_gap,
+            }
+        )
+
+    return final_results
